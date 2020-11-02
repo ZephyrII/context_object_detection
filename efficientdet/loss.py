@@ -28,12 +28,15 @@ class FocalLoss(nn.Module):
     def __init__(self):
         super(FocalLoss, self).__init__()
 
-    def forward(self, classifications, regressions, anchors, annotations, **kwargs):
+    def forward(self, classifications, regressions, anchors, annotations,  **kwargs):
+
+        objectness = kwargs.get('objectness', None)
         alpha = 0.25
         gamma = 2.0
         batch_size = classifications.shape[0]
         classification_losses = []
         regression_losses = []
+        obj_losses = []
 
         anchor = anchors[0, :, :]  # assuming all image sizes are the same, which it is
         dtype = anchors.dtype
@@ -47,11 +50,13 @@ class FocalLoss(nn.Module):
 
             classification = classifications[j, :, :]
             regression = regressions[j, :, :]
+            objectness = objectness[j, :, :]
 
             bbox_annotation = annotations[j]
             bbox_annotation = bbox_annotation[bbox_annotation[:, 4] != -1]
 
             classification = torch.clamp(classification, 1e-4, 1.0 - 1e-4)
+            objectness = torch.clamp(objectness, 1e-4, 1.0 - 1e-4)
 
             if bbox_annotation.shape[0] == 0:
                 if torch.cuda.is_available():
@@ -68,6 +73,18 @@ class FocalLoss(nn.Module):
 
                     regression_losses.append(torch.tensor(0).to(dtype).cuda())
                     classification_losses.append(cls_loss.sum())
+
+                    #obj
+                    alpha_factor = torch.ones_like(objectness) * alpha
+                    alpha_factor = alpha_factor.cuda()
+                    alpha_factor = 1. - alpha_factor
+                    focal_weight = objectness
+                    focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
+
+                    bce = -(torch.log(1.0 - objectness))
+
+                    obj_loss = focal_weight * bce
+                    obj_losses.append(obj_loss.sum())
                 else:
 
                     alpha_factor = torch.ones_like(classification) * alpha
@@ -81,6 +98,17 @@ class FocalLoss(nn.Module):
 
                     regression_losses.append(torch.tensor(0).to(dtype))
                     classification_losses.append(cls_loss.sum())
+                    #obj
+                    alpha_factor = torch.ones_like(objectness) * alpha
+                    alpha_factor = 1. - alpha_factor
+                    focal_weight = objectness
+                    focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
+
+                    bce = -(torch.log(1.0 - objectness))
+
+                    obj_loss = focal_weight * bce
+
+                    obj_losses.append(obj_loss.sum())
 
                 continue
 
@@ -89,12 +117,20 @@ class FocalLoss(nn.Module):
 
             # compute the loss for classification
             targets = torch.ones_like(classification) * -1
+            # print("os", objectness.shape)
+            targets_obj = torch.zeros_like(classification[:, :2])
+            # print("tos", targets_obj.shape)
             if torch.cuda.is_available():
                 targets = targets.cuda()
 
             targets[torch.lt(IoU_max, 0.4), :] = 0
 
             positive_indices = torch.ge(IoU_max, 0.5)
+
+            targets_obj[positive_indices, :] = 1
+            bce_loss = nn.BCELoss()
+            obj_loss = bce_loss(objectness, targets_obj)
+            obj_losses.append(obj_loss.sum())
 
             num_positive_anchors = positive_indices.sum()
 
@@ -177,4 +213,5 @@ class FocalLoss(nn.Module):
             display(out, imgs, obj_list, imshow=False, imwrite=True)
 
         return torch.stack(classification_losses).mean(dim=0, keepdim=True), \
-               torch.stack(regression_losses).mean(dim=0, keepdim=True) * 50  # https://github.com/google/automl/blob/6fdd1de778408625c1faf368a327fe36ecd41bf7/efficientdet/hparams_config.py#L233
+               torch.stack(regression_losses).mean(dim=0, keepdim=True) * 50, \
+               torch.stack(obj_losses).mean(dim=0, keepdim=True) * 50# https://github.com/google/automl/blob/6fdd1de778408625c1faf368a327fe36ecd41bf7/efficientdet/hparams_config.py#L233

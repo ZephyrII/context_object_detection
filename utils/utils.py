@@ -13,6 +13,7 @@ import webcolors
 from torch import nn
 from torch.nn.init import _calculate_fan_in_and_fan_out, _no_grad_normal_
 from torchvision.ops.boxes import batched_nms
+from torchvision.ops.roi_align import roi_align
 
 from utils.sync_batchnorm import SynchronizedBatchNorm2d
 
@@ -127,6 +128,112 @@ def postprocess(x, anchors, regression, classification, regressBoxes, clipBoxes,
 
     return out
 
+def process_metadata(feats, anchors, regression, classification, objectness, regressBoxes, clipBoxes, input_shape):
+    transformed_anchors = regressBoxes(anchors, regression)
+    transformed_anchors = clipBoxes(transformed_anchors, input_shape)
+    scores = torch.max(classification, dim=2, keepdim=True)[0]
+    # obj_scores = torch.max(objectness, dim=2, keepdim=True)[0]
+    obj_scores = objectness[:, :, 1:2]
+    scores_over_thresh = (scores > 0.2)[:, :, 0]
+    out = []
+    # for i in range(feats.shape[0]):
+    for i in range(input_shape[0]):
+        if scores_over_thresh[i].sum() == 0:
+            out.append({
+                'rois': np.array(()),
+                'class_ids': np.array(()),
+                'scores': np.array(()),
+                'features': np.array(()),
+                'emb_idx': np.array(()),
+            })
+            continue
+
+        classification_per = classification[i, scores_over_thresh[i, :], ...].permute(1, 0)
+        transformed_anchors_per = transformed_anchors[i, scores_over_thresh[i, :], ...]
+        transformed_anchors_obj = transformed_anchors[i, ...]
+        scores_per = scores[i, scores_over_thresh[i, :], ...]
+        scores_, classes_ = classification_per.max(dim=0)
+        anchors_nms_idx = batched_nms(transformed_anchors_per, scores_per[:, 0], classes_, iou_threshold=0.2)
+        transformed_anchors_per = transformed_anchors_per/input_shape[2]
+
+        #     print("ras", roi_aligned.shape)
+        if anchors_nms_idx.shape[0] != 0:
+            classes_ = classes_[anchors_nms_idx]
+            scores_ = scores_[anchors_nms_idx]
+            boxes_ = transformed_anchors_per[anchors_nms_idx, :]
+            # nms_obj_scores = torch.zeros_like(obj_scores)
+            # nms_obj_scores = obj_scores[:, anchors_nms_idx, :]
+            # print("anmis", anchors_nms_idx.shape)
+            # obj_scores_over_thresh, obj_idx_over_thresh = torch.sort(nms_obj_scores[i], dim=0, descending=True)
+            # obj_scores_over_thresh = (obj_scores > 0.7)[:, :, 0]
+            # obj_scores_over_thresh = obj_scores_over_thresh[:, :50, 0]
+            # obj_idx_over_thresh = obj_idx_over_thresh[:50, 0]
+            # print("taos0", transformed_anchors_obj.shape)
+            # transformed_anchors_obj = transformed_anchors_obj[obj_idx_over_thresh, :]
+            # print("taos1", transformed_anchors_obj.shape)
+            # print("cs0", classes_.shape)
+
+            cropped_box_feats = []
+            all_obj_idx_over_thresh = []
+            all_obj_scores_over_thresh = []
+            roi_size = (32, 32)
+
+            anchor_subsets = [0, 36864, 46080, 48384, 48960, 49104]
+            for id, f_map in enumerate(feats):
+                current_level_idx = anchors_nms_idx[anchors_nms_idx>anchor_subsets[id]]
+                current_level_idx = current_level_idx[current_level_idx<anchor_subsets[id+1]]
+                # print("clis", current_level_idx.shape)
+                nms_obj_scores = obj_scores[:, current_level_idx, :]
+                # print("nmsos", nms_obj_scores.shape)
+                obj_scores_over_thresh, obj_idx_over_thresh = torch.sort(nms_obj_scores[i], dim=0, descending=True)
+                obj_idx_over_thresh = obj_idx_over_thresh[:25, 0]
+                obj_scores_over_thresh = obj_scores_over_thresh[:25]
+                all_obj_idx_over_thresh.append(obj_idx_over_thresh)
+                all_obj_scores_over_thresh.append(obj_scores_over_thresh)
+                # print("xxx", obj_scores_over_thresh.shape)
+                current_level_anchors_obj = transformed_anchors_obj[obj_idx_over_thresh, :]
+                # print("fms", f_map.shape)
+                # print("oits", obj_idx_over_thresh.shape)
+                roi_aligned = roi_align(f_map, [current_level_anchors_obj], roi_size)
+                # print("ras", roi_aligned.shape)
+                cropped_box_feats.append(roi_aligned)
+
+            # cropped_box_feats = torch.from_numpy(np.array(cropped_box_feats)).cuda()
+            # cropped_box_feats = cropped_box_feats
+            all_obj_idx_over_thresh = torch.cat(all_obj_idx_over_thresh, dim=-1)
+            all_obj_scores_over_thresh = torch.cat(all_obj_scores_over_thresh, dim=0)
+            # print("aosots", all_obj_scores_over_thresh.shape)
+            # print("aoiots", all_obj_idx_over_thresh.shape)
+            obj_scores_over_thresh, obj_idx_over_thresh = torch.sort(all_obj_scores_over_thresh, dim=0, descending=True)[:25]
+            # print("0", obj_scores_over_thresh)
+            # print("1", obj_idx_over_thresh)
+            # print("aoiots", all_obj_idx_over_thresh.shape)
+            # print("2", all_obj_idx_over_thresh[obj_idx_over_thresh])
+            cropped_box_feats = torch.cat(cropped_box_feats, dim=0)
+            # print("cbfs", cropped_box_feats.shape)
+            features_ = cropped_box_feats
+            classes_ = classes_[all_obj_idx_over_thresh]
+            scores_ = scores_[all_obj_idx_over_thresh]
+            boxes_ = boxes_[all_obj_idx_over_thresh, :]
+            # print("fs", features_.shape)
+
+            out.append({
+                'rois': boxes_,
+                'class_ids': classes_,
+                'scores': scores_,
+                'features': features_,
+                'emb_idx': all_obj_idx_over_thresh,
+            })
+        else:
+            out.append({
+                'rois': np.array(()),
+                'class_ids': np.array(()),
+                'scores': np.array(()),
+                'features': np.array(()),
+                'emb_idx': np.array(()),
+            })
+
+    return out
 
 def display(preds, imgs, obj_list, imshow=True, imwrite=False):
     for i in range(len(imgs)):

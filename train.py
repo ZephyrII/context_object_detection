@@ -22,6 +22,8 @@ from efficientdet.loss import FocalLoss
 from utils.sync_batchnorm import patch_replication_callback
 from utils.utils import replace_w_sync_bn, CustomDataParallel, get_last_weights, init_weights, boolean_string
 
+# os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
+# os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 class Params:
     def __init__(self, project_file):
@@ -35,7 +37,7 @@ def get_args():
     parser = argparse.ArgumentParser('Yet Another EfficientDet Pytorch: SOTA object detection network - Zylo117')
     parser.add_argument('-p', '--project', type=str, default='coco', help='project file that contains parameters')
     parser.add_argument('-c', '--compound_coef', type=int, default=0, help='coefficients of efficientdet')
-    parser.add_argument('-n', '--num_workers', type=int, default=4, help='num_workers of dataloader')
+    parser.add_argument('-n', '--num_workers', type=int, default=2, help='num_workers of dataloader')
     parser.add_argument('--batch_size', type=int, default=1, help='The number of images per batch among all devices')
     parser.add_argument('--head_only', type=boolean_string, default=False,
                         help='whether finetunes only the regressor and the classifier, '
@@ -64,6 +66,60 @@ def get_args():
     return args
 
 
+def calc_iou(a, b):
+    # a(anchor) [boxes, (y1, x1, y2, x2)]
+    # b(gt, coco-style) [boxes, (x1, y1, x2, y2)]
+
+    area = (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
+    iw = torch.min(torch.unsqueeze(a[:, 3], dim=1), b[:, 2]) - torch.max(torch.unsqueeze(a[:, 1], 1), b[:, 0])
+    ih = torch.min(torch.unsqueeze(a[:, 2], dim=1), b[:, 3]) - torch.max(torch.unsqueeze(a[:, 0], 1), b[:, 1])
+    iw = torch.clamp(iw, min=0)
+    ih = torch.clamp(ih, min=0)
+    ua = torch.unsqueeze((a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1]), dim=1) + area - iw * ih
+    ua = torch.clamp(ua, min=1e-8)
+    intersection = iw * ih
+    IoU = intersection / ua
+
+    return IoU
+
+def neighbour_loss(classifications, annotations, anchors, embeddings, embeds_idx):
+    batch_size = classifications.shape[0]
+    loss = 0
+    for j in range(batch_size):
+        classification = classifications[j, :, :]
+        bbox_annotation = annotations[j]
+        anchor = anchors[0, :, :]
+        IoU = calc_iou(anchor[:, :], bbox_annotation[:, :4])
+        # print("ious", IoU.shape)
+        IoU_max, IoU_argmax = torch.max(IoU, dim=1)
+        # print("ious", IoU.shape)
+
+        targets = torch.ones_like(classification) * -1
+        if torch.cuda.is_available():
+            targets = targets.cuda()
+
+        targets[torch.lt(IoU_max, 0.4), :] = 0
+        positive_indices = torch.ge(IoU_max, 0.2)
+        # print("piss", positive_indices.shape)
+        # print("piss", positive_indices[:5])
+        assigned_annotations = bbox_annotation[IoU_argmax, :]
+        # print("aas", assigned_annotations.shape)
+        targets[positive_indices, :] = 0
+        targets[positive_indices, assigned_annotations[positive_indices, 4].long()] = 1
+        # print("es", embeddings.shape)
+        # print("ei", embeds_idx.shape)
+        # print("ts", targets[positive_indices, :].shape)
+        # print("pi", torch.where(positive_indices))
+        # print("pis", torch.where(positive_indices)[0].shape)
+        # print("ei", embeds_idx)
+        for emb, idx in zip(embeddings, embeds_idx[j]): # TODO: verify whether embed_idx match target idx
+
+            # print("ii", idx)
+            # print("ii", positive_indices[idx])
+            if positive_indices[idx]:
+                pass
+    return loss
+
 class ModelWithLoss(nn.Module):
     def __init__(self, model, debug=False):
         super().__init__()
@@ -72,16 +128,19 @@ class ModelWithLoss(nn.Module):
         self.debug = debug
 
     def forward(self, imgs, annotations, obj_list=None):
-        _, regression, classification, anchors = self.model(imgs)
+        _, regression, classification, anchors, objectness, emb, emb_idx = self.model(imgs)
+        # print("anns", annotations.shape)
+        neighbour_loss(classification, annotations, anchors, emb, emb_idx)
         if self.debug:
-            cls_loss, reg_loss = self.criterion(classification, regression, anchors, annotations,
+            cls_loss, reg_loss, obj_loss = self.criterion(classification, regression, anchors, annotations,
                                                 imgs=imgs, obj_list=obj_list)
         else:
-            cls_loss, reg_loss = self.criterion(classification, regression, anchors, annotations)
-        return cls_loss, reg_loss
+            cls_loss, reg_loss, obj_loss = self.criterion(classification, regression, anchors, annotations, objectness=objectness)
+        return cls_loss, reg_loss, obj_loss
 
 
 def train(opt):
+    torch.autograd.set_detect_anomaly(True)
     params = Params(f'projects/{opt.project}.yml')
 
     if params.num_gpus == 0:
@@ -223,11 +282,12 @@ def train(opt):
                         annot = annot.cuda()
 
                     optimizer.zero_grad()
-                    cls_loss, reg_loss = model(imgs, annot, obj_list=params.obj_list)
+                    cls_loss, reg_loss, obj_loss = model(imgs, annot, obj_list=params.obj_list)
                     cls_loss = cls_loss.mean()
                     reg_loss = reg_loss.mean()
+                    obj_loss = obj_loss.mean()
 
-                    loss = cls_loss + reg_loss
+                    loss = cls_loss + reg_loss + obj_loss
                     if loss == 0 or not torch.isfinite(loss):
                         continue
 
@@ -238,9 +298,9 @@ def train(opt):
                     epoch_loss.append(float(loss))
 
                     progress_bar.set_description(
-                        'Step: {}. Epoch: {}/{}. Iteration: {}/{}. Cls loss: {:.5f}. Reg loss: {:.5f}. Total loss: {:.5f}'.format(
+                        'Step: {}. Epoch: {}/{}. Iteration: {}/{}. Cls loss: {:.5f}. Reg loss: {:.5f}. Obj loss: {:.5f}. Total loss: {:.5f}'.format(
                             step, epoch, opt.num_epochs, iter + 1, num_iter_per_epoch, cls_loss.item(),
-                            reg_loss.item(), loss.item()))
+                            reg_loss.item(), obj_loss.item(), loss.item()))
                     writer.add_scalars('Loss', {'train': loss}, step)
                     writer.add_scalars('Regression_loss', {'train': reg_loss}, step)
                     writer.add_scalars('Classfication_loss', {'train': cls_loss}, step)

@@ -416,6 +416,94 @@ class Classifier(nn.Module):
 
         return feats
 
+class Objectness(nn.Module):
+    """
+    modified by Zylo117
+    """
+
+    def __init__(self, in_channels, num_anchors, num_layers, pyramid_levels=5, onnx_export=False):
+        super(Objectness, self).__init__()
+
+        self.num_classes = 2
+        self.num_anchors = num_anchors
+        self.num_layers = num_layers
+        self.conv_list = nn.ModuleList(
+            [SeparableConvBlock(in_channels, in_channels, norm=False, activation=False) for i in range(num_layers)])
+        self.bn_list = nn.ModuleList(
+            [nn.ModuleList([nn.BatchNorm2d(in_channels, momentum=0.01, eps=1e-3) for i in range(num_layers)]) for j in
+             range(pyramid_levels)])
+        self.header = SeparableConvBlock(in_channels, num_anchors * self.num_classes, norm=False, activation=False)
+        self.swish = MemoryEfficientSwish() if not onnx_export else Swish()
+
+    def forward(self, inputs):
+        feats = []
+        for feat, bn_list in zip(inputs, self.bn_list):
+            for i, bn, conv in zip(range(self.num_layers), bn_list, self.conv_list):
+                feat = conv(feat)
+                feat = bn(feat)
+                feat = self.swish(feat)
+            feat = self.header(feat)
+
+            feat = feat.permute(0, 2, 3, 1)
+            feat = feat.contiguous().view(feat.shape[0], feat.shape[1], feat.shape[2], self.num_anchors,
+                                          self.num_classes)
+            feat = feat.contiguous().view(feat.shape[0], -1, self.num_classes)
+
+            feats.append(feat)
+
+        feats = torch.cat(feats, dim=1)
+        feats = feats.sigmoid()
+
+        return feats
+
+class Embedder(nn.Module):
+    """
+    modified by Zylo117
+    """
+
+    def __init__(self, in_channels, num_anchors, num_classes, num_layers, pyramid_levels=5, onnx_export=False):
+        super(Embedder, self).__init__()
+        self.num_anchors = num_anchors
+        self.num_classes = num_classes
+        self.num_layers = num_layers
+        self.conv_list = nn.ModuleList(
+            [SeparableConvBlock(in_channels, in_channels, norm=False, activation=False) for i in range(num_layers)])
+        self.bn_list = nn.ModuleList(
+            [nn.ModuleList([nn.BatchNorm2d(in_channels, momentum=0.01, eps=1e-3) for i in range(num_layers)]) for j in
+             range(pyramid_levels)])
+        self.header = SeparableConvBlock(in_channels, num_anchors * num_classes, norm=False, activation=False)
+        self.swish = MemoryEfficientSwish() if not onnx_export else Swish()
+
+    def forward(self, inputs):
+        feats = []
+        for feat, bn_list in zip(inputs, self.bn_list):
+            for i, bn, conv in zip(range(self.num_layers), bn_list, self.conv_list):
+                feat = conv(feat)
+                feat = bn(feat)
+                feat = self.swish(feat)
+            # print("FFFS", feat.shape)
+            feat = self.header(feat)
+            # print("FFFS1", feat.shape)
+            flatten = nn.Flatten(2, 3)
+            embed_lin = nn.Linear(1024, 1024)
+            linear1 = nn.Linear(1024, 1)
+            feat = flatten(feat)
+            embed = embed_lin(feat)
+            print("FFFS2", embed.shape)
+            feat = linear1(embed)
+            # print("FFFS3", feat.shape)
+
+            feat = feat.permute(0, 2, 1)
+            # feat = feat.contiguous().view(feat.shape[0], feat.shape[1], feat.shape[2], self.num_anchors,
+            #                               self.num_classes)
+            # feat = feat.contiguous().view(feat.shape[0], -1, self.num_classes)
+
+            feats.append(embed)
+
+        feats = torch.cat(feats, dim=1)
+        feats = feats.sigmoid()
+
+        return feats
 
 class EfficientNet(nn.Module):
     """

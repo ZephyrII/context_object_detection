@@ -3,9 +3,9 @@
 import torch
 from torch import nn
 
-from efficientdet.model import BiFPN, Regressor, Classifier, EfficientNet
-from efficientdet.utils import Anchors
-
+from efficientdet.model import BiFPN, Regressor, Classifier, Objectness, Embedder, EfficientNet
+from efficientdet.utils import Anchors, BBoxTransform, ClipBoxes
+from utils.utils import process_metadata
 
 class EfficientDetBackbone(nn.Module):
     def __init__(self, num_classes=80, compound_coef=0, load_weights=False, **kwargs):
@@ -45,7 +45,6 @@ class EfficientDetBackbone(nn.Module):
               for _ in range(self.fpn_cell_repeats[compound_coef])])
 
         self.num_classes = num_classes
-        print("na", num_anchors)
         self.regressor = Regressor(in_channels=self.fpn_num_filters[self.compound_coef], num_anchors=num_anchors,
                                    num_layers=self.box_class_repeats[self.compound_coef],
                                    pyramid_levels=self.pyramid_levels[self.compound_coef])
@@ -53,10 +52,19 @@ class EfficientDetBackbone(nn.Module):
                                      num_classes=num_classes,
                                      num_layers=self.box_class_repeats[self.compound_coef],
                                      pyramid_levels=self.pyramid_levels[self.compound_coef])
+        self.objectness = Objectness(in_channels=self.fpn_num_filters[self.compound_coef], num_anchors=num_anchors,
+                                     num_layers=self.box_class_repeats[self.compound_coef],
+                                     pyramid_levels=self.pyramid_levels[self.compound_coef])
+
+        self.embedder = Embedder(in_channels=self.fpn_num_filters[self.compound_coef], num_anchors=1,
+                                     num_classes=num_classes,
+                                     num_layers=self.box_class_repeats[self.compound_coef],
+                                     pyramid_levels=self.pyramid_levels[self.compound_coef])
 
         self.anchors = Anchors(anchor_scale=self.anchor_scale[compound_coef],
                                pyramid_levels=(torch.arange(self.pyramid_levels[self.compound_coef]) + 3).tolist(),
                                **kwargs)
+
 
         self.backbone_net = EfficientNet(self.backbone_compound_coef[compound_coef], load_weights)
 
@@ -67,6 +75,7 @@ class EfficientDetBackbone(nn.Module):
 
     def forward(self, inputs):
         max_size = inputs.shape[-1]
+        # print("is", inputs.shape)
 
         _, p3, p4, p5 = self.backbone_net(inputs)
 
@@ -75,9 +84,25 @@ class EfficientDetBackbone(nn.Module):
 
         regression = self.regressor(features)
         classification = self.classifier(features)
+        objectness = self.objectness(features)
         anchors = self.anchors(inputs, inputs.dtype)
+        regressBoxes = BBoxTransform()
+        clipBoxes = ClipBoxes()
+        out = process_metadata(features, anchors, regression, classification, objectness,
+                               regressBoxes, clipBoxes, inputs.shape)
+        # print("AS", anchors.shape)
+        # print("FS", features[1].shape)
+        # print("FS", features[2].shape)
+        # print("FS", features[4].shape)
+        # print("OS", out[0]["features"].shape)
+        batch_feats = torch.stack([img["features"] for img in out], dim=0)
+        batch_emb_idx = torch.stack([img["emb_idx"] for img in out], dim=0)
+        # print("BEIS", batch_emb_idx.shape)
+        embeddings = self.embedder(batch_feats)
+        # print("ES", embeddings.shape)
+        # emb_idx = out[0]["emb_idx"]
 
-        return features, regression, classification, anchors
+        return features, regression, classification, anchors, objectness, embeddings, batch_emb_idx
 
     def init_backbone(self, path):
         state_dict = torch.load(path)
