@@ -424,7 +424,7 @@ class Objectness(nn.Module):
     def __init__(self, in_channels, num_anchors, num_layers, pyramid_levels=5, onnx_export=False):
         super(Objectness, self).__init__()
 
-        self.num_classes = 2
+        self.num_classes = 1
         self.num_anchors = num_anchors
         self.num_layers = num_layers
         self.conv_list = nn.ModuleList(

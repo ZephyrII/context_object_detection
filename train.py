@@ -38,7 +38,7 @@ def get_args():
     parser.add_argument('-p', '--project', type=str, default='coco', help='project file that contains parameters')
     parser.add_argument('-c', '--compound_coef', type=int, default=0, help='coefficients of efficientdet')
     parser.add_argument('-n', '--num_workers', type=int, default=2, help='num_workers of dataloader')
-    parser.add_argument('--batch_size', type=int, default=1, help='The number of images per batch among all devices')
+    parser.add_argument('--batch_size', type=int, default=2, help='The number of images per batch among all devices')
     parser.add_argument('--head_only', type=boolean_string, default=False,
                         help='whether finetunes only the regressor and the classifier, '
                              'useful in early stage convergence or small/easy dataset')
@@ -55,7 +55,7 @@ def get_args():
                         help='Early stopping\'s parameter: number of epochs with no improvement after which training will be stopped. Set to 0 to disable this technique.')
     parser.add_argument('--data_path', type=str, default='/workspace/share/', help='the root folder of dataset')
     parser.add_argument('--log_path', type=str, default='logs/')
-    parser.add_argument('-w', '--load_weights', type=str, default=None,
+    parser.add_argument('-w', '--load_weights', type=str, default="./weights/efficientdet-d0.pth",
                         help='whether to load weights from a checkpoint, set None to initialize, set \'last\' to load last checkpoint')
     parser.add_argument('--saved_path', type=str, default='logs/')
     parser.add_argument('--debug', type=boolean_string, default=False,
@@ -112,12 +112,12 @@ def neighbour_loss(classifications, annotations, anchors, embeddings, embeds_idx
         # print("pi", torch.where(positive_indices))
         # print("pis", torch.where(positive_indices)[0].shape)
         # print("ei", embeds_idx)
-        for emb, idx in zip(embeddings, embeds_idx[j]): # TODO: verify whether embed_idx match target idx
+        # for emb, idx in zip(embeddings, embeds_idx[j]): # TODO: verify whether embed_idx match target idx
 
             # print("ii", idx)
             # print("ii", positive_indices[idx])
-            if positive_indices[idx]:
-                pass
+            # if positive_indices[idx]:
+            #     pass
     return loss
 
 class ModelWithLoss(nn.Module):
@@ -129,7 +129,8 @@ class ModelWithLoss(nn.Module):
 
     def forward(self, imgs, annotations, obj_list=None):
         _, regression, classification, anchors, objectness, emb, emb_idx = self.model(imgs)
-        # print("anns", annotations.shape)
+        print("cs", classification.shape)
+        print("os", objectness.shape)
         neighbour_loss(classification, annotations, anchors, emb, emb_idx)
         if self.debug:
             cls_loss, reg_loss, obj_loss = self.criterion(classification, regression, anchors, annotations,

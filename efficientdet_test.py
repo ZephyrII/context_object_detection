@@ -25,8 +25,8 @@ images = os.listdir(dir_path)
 anchor_ratios = [(1.0, 1.0), (1.4, 0.7), (0.7, 1.4)]
 anchor_scales = [2 ** 0, 2 ** (1.0 / 3.0), 2 ** (2.0 / 3.0)]
 
-threshold = 0.2
-iou_threshold = 0.2
+threshold = 0.1
+iou_threshold = 0.1
 
 use_cuda = True
 use_float16 = False
@@ -52,7 +52,7 @@ input_size = input_sizes[compound_coef] if force_input_size is None else force_i
 
 model = EfficientDetBackbone(compound_coef=compound_coef, num_classes=len(obj_list),
                              ratios=anchor_ratios, scales=anchor_scales)
-model.load_state_dict(torch.load(f'/workspace/share/weights/efficientdet-d0_8_121500.pth', map_location='cpu'))
+model.load_state_dict(torch.load(f'/workspace/share/weights/efficientdet-d0_0_34000.pth', map_location='cpu'))
 model.requires_grad_(False)
 model.eval()
 
@@ -73,19 +73,20 @@ for img_fname in images:
         model = model.half()
 
     with torch.no_grad():
-        features, regression, classification, anchors = model(x)
+        features, regression, classification, anchors, objectness, embeddings, batch_emb_idx = model(x)
 
         regressBoxes = BBoxTransform()
         clipBoxes = ClipBoxes()
 
         out = postprocess(x,
-                          anchors, regression, classification,
+                          anchors, regression, classification, objectness,
                           regressBoxes, clipBoxes,
                           threshold, iou_threshold)
 
     def display(preds, imgs, imshow=True, imwrite=False):
         for i in range(len(imgs)):
             if len(preds[i]['rois']) == 0:
+                print("here")
                 continue
 
             imgs[i] = imgs[i].copy()
@@ -116,10 +117,10 @@ for img_fname in images:
         print('inferring image for 10 times...')
         t1 = time.time()
         for _ in range(10):
-            _, regression, classification, anchors = model(x)
+            _, regression, classification, anchors, objectness, emb, emb_idx = model(x)
 
             out = postprocess(x,
-                              anchors, regression, classification,
+                              anchors, regression, classification, objectness,
                               regressBoxes, clipBoxes,
                               threshold, iou_threshold)
             out = invert_affine(framed_metas, out)

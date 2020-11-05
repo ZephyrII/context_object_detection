@@ -95,14 +95,14 @@ class EfficientDetBackbone(nn.Module):
         # print("FS", features[2].shape)
         # print("FS", features[4].shape)
         # print("OS", out[0]["features"].shape)
-        batch_feats = torch.stack([img["features"] for img in out], dim=0)
-        batch_emb_idx = torch.stack([img["emb_idx"] for img in out], dim=0)
+        # batch_feats = torch.stack([img["features"] for img in out], dim=0)
+        # batch_emb_idx = torch.stack([img["emb_idx"] for img in out], dim=0)
         # print("BEIS", batch_emb_idx.shape)
-        embeddings = self.embedder(batch_feats)
+        # embeddings = self.embedder(batch_feats)
         # print("ES", embeddings.shape)
         # emb_idx = out[0]["emb_idx"]
 
-        return features, regression, classification, anchors, objectness, embeddings, batch_emb_idx
+        return features, regression, classification, anchors, objectness, None, None # embeddings, batch_emb_idx
 
     def init_backbone(self, path):
         state_dict = torch.load(path)

@@ -30,7 +30,7 @@ class FocalLoss(nn.Module):
 
     def forward(self, classifications, regressions, anchors, annotations,  **kwargs):
 
-        objectness = kwargs.get('objectness', None)
+        batch_objectness = kwargs.get('objectness', None)
         alpha = 0.25
         gamma = 2.0
         batch_size = classifications.shape[0]
@@ -50,7 +50,7 @@ class FocalLoss(nn.Module):
 
             classification = classifications[j, :, :]
             regression = regressions[j, :, :]
-            objectness = objectness[j, :, :]
+            objectness = batch_objectness[j, :, :]
 
             bbox_annotation = annotations[j]
             bbox_annotation = bbox_annotation[bbox_annotation[:, 4] != -1]
@@ -118,12 +118,14 @@ class FocalLoss(nn.Module):
             # compute the loss for classification
             targets = torch.ones_like(classification) * -1
             # print("os", objectness.shape)
-            targets_obj = torch.zeros_like(classification[:, :2])
+            targets_obj = torch.ones_like(classification[:, :1]) * -1
             # print("tos", targets_obj.shape)
             if torch.cuda.is_available():
                 targets = targets.cuda()
+                targets_obj = targets_obj.cuda()
 
             targets[torch.lt(IoU_max, 0.4), :] = 0
+            targets_obj[torch.lt(IoU_max, 0.4), :] = 0
 
             positive_indices = torch.ge(IoU_max, 0.5)
 

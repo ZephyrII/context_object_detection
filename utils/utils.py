@@ -88,10 +88,13 @@ def preprocess_video(*frame_from_video, max_size=512, mean=(0.406, 0.456, 0.485)
     return ori_imgs, framed_imgs, framed_metas
 
 
-def postprocess(x, anchors, regression, classification, regressBoxes, clipBoxes, threshold, iou_threshold):
+def postprocess(x, anchors, regression, classification, objectness, regressBoxes, clipBoxes, threshold, iou_threshold):
     transformed_anchors = regressBoxes(anchors, regression)
-    transformed_anchors = clipBoxes(transformed_anchors, x)
-    scores = torch.max(classification, dim=2, keepdim=True)[0]
+    transformed_anchors = clipBoxes(transformed_anchors, x.shape)
+    print("cs", classification.shape)
+    print("os", objectness.shape)
+    # scores = torch.max(classification, dim=2, keepdim=True)[0]
+    scores = torch.max(objectness, dim=2, keepdim=True)[0]
     scores_over_thresh = (scores > threshold)[:, :, 0]
     out = []
     for i in range(x.shape[0]):
@@ -133,7 +136,7 @@ def process_metadata(feats, anchors, regression, classification, objectness, reg
     transformed_anchors = clipBoxes(transformed_anchors, input_shape)
     scores = torch.max(classification, dim=2, keepdim=True)[0]
     # obj_scores = torch.max(objectness, dim=2, keepdim=True)[0]
-    obj_scores = objectness[:, :, 1:2]
+    obj_scores = objectness[:, :]
     scores_over_thresh = (scores > 0.2)[:, :, 0]
     out = []
     # for i in range(feats.shape[0]):
@@ -182,10 +185,11 @@ def process_metadata(feats, anchors, regression, classification, objectness, reg
             for id, f_map in enumerate(feats):
                 current_level_idx = anchors_nms_idx[anchors_nms_idx>anchor_subsets[id]]
                 current_level_idx = current_level_idx[current_level_idx<anchor_subsets[id+1]]
-                # print("clis", current_level_idx.shape)
+                # print("oss", obj_scores.shape)
                 nms_obj_scores = obj_scores[:, current_level_idx, :]
                 # print("nmsos", nms_obj_scores.shape)
                 obj_scores_over_thresh, obj_idx_over_thresh = torch.sort(nms_obj_scores[i], dim=0, descending=True)
+                # print("iods", obj_idx_over_thresh.shape)
                 obj_idx_over_thresh = obj_idx_over_thresh[:25, 0]
                 obj_scores_over_thresh = obj_scores_over_thresh[:25]
                 all_obj_idx_over_thresh.append(obj_idx_over_thresh)
