@@ -326,6 +326,7 @@ def train(opt):
                 model.eval()
                 loss_regression_ls = []
                 loss_classification_ls = []
+                loss_obj_ls = []
                 for iter, data in enumerate(val_generator):
                     with torch.no_grad():
                         imgs = data['img']
@@ -335,20 +336,23 @@ def train(opt):
                             imgs = imgs.cuda()
                             annot = annot.cuda()
 
-                        cls_loss, reg_loss = model(imgs, annot, obj_list=params.obj_list)
+                        cls_loss, reg_loss, obj_loss = model(imgs, annot, obj_list=params.obj_list)
                         cls_loss = cls_loss.mean()
                         reg_loss = reg_loss.mean()
+                        obj_loss = obj_loss.mean()
 
-                        loss = cls_loss + reg_loss
+                        loss = cls_loss + reg_loss + obj_loss
                         if loss == 0 or not torch.isfinite(loss):
                             continue
 
                         loss_classification_ls.append(cls_loss.item())
                         loss_regression_ls.append(reg_loss.item())
+                        loss_obj_ls.append(obj_loss.item())
 
                 cls_loss = np.mean(loss_classification_ls)
                 reg_loss = np.mean(loss_regression_ls)
-                loss = cls_loss + reg_loss
+                obj_loss = np.mean(loss_obj_ls)
+                loss = cls_loss + reg_loss + obj_loss
 
                 print(
                     'Val. Epoch: {}/{}. Classification loss: {:1.5f}. Regression loss: {:1.5f}. Total loss: {:1.5f}'.format(
@@ -356,6 +360,7 @@ def train(opt):
                 writer.add_scalars('Loss', {'val': loss}, step)
                 writer.add_scalars('Regression_loss', {'val': reg_loss}, step)
                 writer.add_scalars('Classfication_loss', {'val': cls_loss}, step)
+                writer.add_scalars('Obj_loss', {'val': obj_loss}, step)
 
                 if loss + opt.es_min_delta < best_loss:
                     best_loss = loss

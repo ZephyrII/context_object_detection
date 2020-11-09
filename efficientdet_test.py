@@ -18,7 +18,7 @@ import os
 
 compound_coef = 0
 force_input_size = None  # set None to use default size
-dir_path = '/workspace/share/coco/val2017'
+dir_path = '/root/share/tf/dataset/coco/val2017'
 images = os.listdir(dir_path)
 
 # replace this part with your project's anchor config
@@ -52,7 +52,7 @@ input_size = input_sizes[compound_coef] if force_input_size is None else force_i
 
 model = EfficientDetBackbone(compound_coef=compound_coef, num_classes=len(obj_list),
                              ratios=anchor_ratios, scales=anchor_scales)
-model.load_state_dict(torch.load(f'/workspace/share/weights/efficientdet-d0_0_34000.pth', map_location='cpu'))
+model.load_state_dict(torch.load(f'/workspace/context_object_detection/logs/coco/efficientdet-d0_5_50000.pth', map_location='cpu'))
 model.requires_grad_(False)
 model.eval()
 
